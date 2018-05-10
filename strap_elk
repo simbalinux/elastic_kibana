@@ -1,0 +1,123 @@
+#!/bin/bash
+set -x 
+#ip vars
+ip=$(hostname -I | cut -f2 -d' ')
+
+#use this when in private newtwork to avoid network issues.
+ip2="0.0.0.0"
+
+this_host=$(hostname -f)
+
+#add hostname > /etc/hosts || exit
+if [ -n "$(grep "$ip" /etc/hosts)" ]; then
+  echo "HOSTNAME exists in /etc/hosts"
+else
+  echo -e "$ip\t$this_host" >> /etc/hosts
+fi
+
+#disable selinux
+sed -i 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+setenforce 0
+getenforce
+
+#install packages 
+yum -y update
+yum -y install unzip wget net-tools java-1.8.0-openjdk vim curl
+#check 
+java -version
+
+#import key
+rpm --import https://artifacts.elastic.co/GPG-KEY-elasticsearch
+# repo added for elasticsearch 
+echo "[elasticsearch-5.x]
+name=Elasticsearch repository for 5.x packages
+baseurl=https://artifacts.elastic.co/packages/5.x/yum
+gpgcheck=1
+gpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch
+enabled=1
+autorefresh=1
+type=rpm-md" | tee /etc/yum.repos.d/elasticsearch.repo
+
+#install and configure elasticsearch
+yum -y install elasticsearch -y
+systemctl restart firewalld
+systemctl status firewalld
+sysctl -w wm.max_map_count=262144
+
+systemctl daemon-reload
+systemctl start elasticsearch 
+systemctl enable elasticsearch
+
+firewall-cmd --permanent --add-port 9200/tcp
+
+sleep 60
+#test port 9200 for elasticsearch
+curl -XGET http://localhost:9200
+
+#if you need to install logstash
+
+#echo "[logstash-5.x]
+#name=Elastic repository for 5.x packages
+#baseurl=https://artifacts.elastic.co/packages/5.x/yum
+#gpgcheck=1
+#gpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch
+#enabled=1
+#autorefresh=1
+#type=rpm-md" | tee /etc/yum.repos.d/elasticsearch.repo
+
+#yum -y update && yum -y install logstash
+#systemctl daemon-reload
+#systemctl start logstash
+#systemctl enable logstash
+#
+#firewall-cmd --permanent --add-port=5044/tcp
+#firewall-cmd --reload
+
+
+
+echo "[kibana-5.x]
+name=Kibana repository for 5.x packages
+baseurl=https://artifacts.elastic.co/packages/5.x/yum
+gpgcheck=1
+gpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch
+enabled=1
+autorefresh=1
+type=rpm-md" | tee /etc/yum.repos.d/kibana.repo
+yum -y update && yum -y install kibana
+systemctl daemon-reload
+firewall-cmd --permanent --add-port 5601/tcp
+firewall-cmd --reload
+
+
+#add local ip to the kibana.yml config
+sed -i "s/^#server.host: \"localhost\"/server.host: \"$ip2\"/g" /etc/kibana/kibana.yml 
+echo "xpack.security.enabled: false" >> /etc/kibana/kibana.yml
+
+systemctl restart kibana
+systemctl enable kibana
+sleep 10 
+curl -XGET http://localhost:5601
+#no repo required
+yum -y install filebeat
+
+cd /usr/share/elasticsearch/
+
+bin/elasticsearch-plugin install -b ingest-geoip
+bin/elasticsearch-plugin install -b ingest-user-agent
+systemctl stop elasticsearch.service
+systemctl start elasticsearch.service
+
+
+cp -f /vagrant/filebeat.yml /etc/filebeat/filebeat.yml
+sleep 60 
+curl -XGET localhost:9200
+#elasticsearch must be listening before installing dashboards
+/usr/share/filebeat/scripts/import_dashboards
+systemctl stop kibana.service
+systemctl start kibana.service
+
+
+sleep 20
+#if you need test apache logs download url listed below
+#wget http://media.sundog-soft.com/es/access_log
+systemctl start filebeat.service 
